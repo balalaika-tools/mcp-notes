@@ -95,13 +95,13 @@ SQL all made before it.
 The cleanest analogy, and the one Anthropic leans on in the spec: **MCP is USB-C for
 AI applications.**
 
-| USB-C                                    | MCP                                       |
-|------------------------------------------|-------------------------------------------|
-| One physical port, many device classes   | One JSON-RPC protocol, many capabilities  |
+| USB-C                                    | MCP                                                       |
+|------------------------------------------|-----------------------------------------------------------|
+| One physical port, many device classes   | One JSON-RPC protocol, many capabilities                  |
 | Device declares what it is on connect    | Server declares its tools/resources/prompts on initialize |
-| Host negotiates power, data, video       | Host negotiates protocol version, capabilities |
-| You don't care what's inside the cable   | You don't care what language the server is written in |
-| Works the same on a laptop or a phone    | Works the same in Claude Desktop or VS Code |
+| Host negotiates power, data, video       | Host negotiates protocol version, capabilities            |
+| You don't care what's inside the cable   | You don't care what language the server is written in     |
+| Works the same on a laptop or a phone    | Works the same in Claude Desktop or VS Code               |
 
 A second analogy that resonates with engineers who lived through the IDE wars:
 **MCP is LSP for tools.** Before the Language Server Protocol (Microsoft, 2016), every

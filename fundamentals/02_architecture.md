@@ -274,13 +274,13 @@ transport disconnect). Within a session, both peers can:
 
 Sessions matter because they constrain the choice of transport.
 
-| Property               | Stateful session                              | Stateless                                       |
-|------------------------|-----------------------------------------------|-------------------------------------------------|
-| Subscriptions          | Yes — server pushes updates                   | No — every call is independent                  |
-| Server-→client requests| Yes (sampling, elicitation, roots query)      | Hard or impossible — no return channel          |
-| Server identity        | Persistent across calls                       | Any worker may handle any call                  |
+| Property               | Stateful session                              | Stateless                                          |
+|------------------------|-----------------------------------------------|----------------------------------------------------|
+| Subscriptions          | Yes — server pushes updates                   | No — every call is independent                     |
+| Server-→client requests| Yes (sampling, elicitation, roots query)      | Hard or impossible — no return channel             |
+| Server identity        | Persistent across calls                       | Any worker may handle any call                     |
 | Typical transport      | stdio (long-lived pipe), Streamable HTTP      | Plain request/response HTTP behind a load balancer |
-| Failure mode           | Disconnect = lose subscriptions, cached state | None — but features above are unavailable       |
+| Failure mode           | Disconnect = lose subscriptions, cached state | None — but features above are unavailable          |
 
 A stateless deployment **can** still serve `tools/call` and `tools/list` perfectly well,
 because those are pure request/response. It just gives up the bidirectional and subscription
@@ -344,13 +344,13 @@ MCP uses two error mechanisms, and conflating them is a common bug.
 These signal **the protocol itself failed**: bad JSON, unknown method, invalid params,
 internal exception in the dispatcher. Standard JSON-RPC 2.0 codes apply.
 
-| Code     | Meaning                | When you'd see it                                              |
-|----------|------------------------|----------------------------------------------------------------|
-| `-32700` | Parse error            | Server got malformed JSON                                      |
-| `-32600` | Invalid request        | Missing `jsonrpc`, missing `method`, etc.                      |
+| Code     | Meaning                | When you'd see it                                                 |
+|----------|------------------------|-------------------------------------------------------------------|
+| `-32700` | Parse error            | Server got malformed JSON                                         |
+| `-32600` | Invalid request        | Missing `jsonrpc`, missing `method`, etc.                         |
 | `-32601` | Method not found       | Client called `tools/call` on a server with no `tools` capability |
-| `-32602` | Invalid params         | `tools/call` with a missing required argument                  |
-| `-32603` | Internal error         | Unhandled exception in the server's request handler            |
+| `-32602` | Invalid params         | `tools/call` with a missing required argument                     |
+| `-32603` | Internal error         | Unhandled exception in the server's request handler               |
 
 Wire format:
 

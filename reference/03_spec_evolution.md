@@ -72,7 +72,7 @@ A few practical implications that fall out of the date-string model:
 |---------|----------|-------------------|-----------------|
 | `2024-11-05` | Nov 2024 | Legacy; some old servers still on this | Initial public release |
 | `2025-03-26` | Mar 2025 | Deprecated; Streamable HTTP introduced (replaced HTTP+SSE) | First major iteration |
-| `2025-06-18` | Jun 2025 | Older but supported | OAuth 2.1 + RFC 9728 mandated; Elicitation introduced |
+| `2025-06-18` | Jun 2025 | Older but supported | MCP auth profile matured around OAuth 2.1 + RFC 9728; Elicitation introduced |
 | `2025-11-25` | Nov 2025 | **Current** | One-year anniversary release; Tasks, Icons, Extensions framework |
 
 Four releases in twelve months. The cadence has been roughly quarterly with an extra

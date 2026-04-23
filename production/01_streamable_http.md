@@ -49,9 +49,9 @@ across the SSE upgrade boundary are a footgun.
 
 | Method    | Required? | Purpose                                                                    |
 |-----------|-----------|----------------------------------------------------------------------------|
-| `POST`    | MUST      | Client sends one JSON-RPC request, response, notification, or batch        |
-| `GET`     | MUST      | Client opens long-lived SSE stream for server-initiated traffic            |
-| `DELETE`  | MUST      | Client terminates the session explicitly                                   |
+| `POST`    | MUST      | Client sends one JSON-RPC request, response, or notification               |
+| `GET`     | MAY       | Client opens long-lived SSE stream for server-initiated traffic            |
+| `DELETE`  | MAY       | Client asks the server to terminate a session explicitly                   |
 | `OPTIONS` | MAY       | CORS preflight; required if browser-based hosts will connect               |
 
 Every request from a client at protocol version `2025-06-18` or later **must** carry an
@@ -86,7 +86,7 @@ The dual `Accept` is non-negotiable — even if the client doesn't expect stream
 that sends only `application/json` is buggy and well-behaved servers will reject it
 with `406 Not Acceptable`.
 
-**Body**: a JSON-RPC request, response, notification, or a JSON array of these (a batch).
+**Body**: a single JSON-RPC request, response, or notification.
 
 ### 3.1 Server response: plain JSON
 
@@ -241,27 +241,27 @@ SSE has a built-in resumption protocol. The MCP spec layers on top of it.
 
 ```
 Client                          Server
-  │                               │
-  │ GET /mcp/  Accept: SSE       │
-  │ Mcp-Session-Id: 9f2a-...     │
-  │──────────────────────────────▶│
-  │                               │
-  │  id: 100  data: {...}        │
-  │◀──────────────────────────────│
-  │  id: 101  data: {...}        │
-  │◀──────────────────────────────│
-  │                               │
-  │     ✗ network drops          │
-  │                               │
-  │ GET /mcp/  Accept: SSE       │
-  │ Mcp-Session-Id: 9f2a-...     │
-  │ Last-Event-ID: 101           │
-  │──────────────────────────────▶│
-  │                               │
-  │  id: 102  data: {...}  ← replayed
-  │◀──────────────────────────────│
-  │  id: 103  data: {...}        │
-  │◀──────────────────────────────│
+  │                                │
+  │ GET /mcp/  Accept: SSE         │
+  │ Mcp-Session-Id: 9f2a-...       │
+  │───────────────────────────────▶│
+  │                                │
+  │  id: 100  data: {...}          │
+  │◀────────────────────────────── │
+  │  id: 101  data: {...}          │
+  │◀───────────────────────────────│
+  │                                │
+  │     ✗ network drops            │
+  │                                │
+  │ GET /mcp/  Accept: SSE         │
+  │ Mcp-Session-Id: 9f2a-...       │
+  │ Last-Event-ID: 101             │
+  │──────────────────────────────▶ │
+  │                                │
+  │ id: 102  data: {...}← replayed │
+  │◀───────────────────────────────│
+  │ id: 103  data: {...}           │
+  │◀───────────────────────────────│
 ```
 
 **Server obligations**:

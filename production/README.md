@@ -25,7 +25,7 @@
 ## Reading Order
 
 1. **Streamable HTTP** — the transport everything else assumes
-2. **Authentication** — required before exposing anything to the internet
+2. **Authentication** — strongly recommended before exposing anything to the internet
 3. **Scaling** — stateful vs stateless decisions affect everything downstream
 4. **Observability** — what to instrument and why
 5. **Security** — the broader threat model beyond just auth

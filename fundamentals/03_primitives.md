@@ -16,13 +16,13 @@ client (the server *exposes* something the client can use). Three flow from
 server to client as *requests back* — the server can ask the client to do
 work on its behalf.
 
-| Primitive       | Direction       | Who controls invocation         | What it's for                                                |
-|-----------------|-----------------|---------------------------------|--------------------------------------------------------------|
-| **Tools**       | server → client | **Model**-controlled            | Side-effecting actions the LLM may decide to call            |
-| **Resources**   | server → client | **Application**-controlled      | Read-only content the host attaches to context               |
-| **Prompts**     | server → client | **User**-controlled             | Pre-built message templates the user picks from a menu       |
-| **Sampling**    | client ← server | Server requests, client decides | Server asks the client to run an LLM completion              |
-| **Elicitation** | client ← server | Server requests, user decides   | Server asks the user for missing structured input mid-call   |
+| Primitive       | Direction       | Who controls invocation         | What it's for                                                   |
+|-----------------|-----------------|---------------------------------|-----------------------------------------------------------------|
+| **Tools**       | server → client | **Model**-controlled            | Side-effecting actions the LLM may decide to call               |
+| **Resources**   | server → client | **Application**-controlled      | Read-only content the host attaches to context                  |
+| **Prompts**     | server → client | **User**-controlled             | Pre-built message templates the user picks from a menu          |
+| **Sampling**    | client ← server | Server requests, client decides | Server asks the client to run an LLM completion                 |
+| **Elicitation** | client ← server | Server requests, user decides   | Server asks the user for missing structured input mid-call      |
 | **Roots**       | client ← server | Server requests, client decides | Server asks the client which filesystem/URI scopes are in scope |
 
 > **Key insight**: The "who controls invocation" column is the most important
@@ -36,30 +36,30 @@ A useful mental picture:
 
 ```
         ┌──────────────────────── HOST (Claude Desktop, IDE) ─────────────────────────┐
-        │                                                                              │
-        │  ┌────────────────────────────── CLIENT ──────────────────────────────────┐  │
-        │  │                                                                         │  │
-        │  │  ──── server-exposed (server → client) ────                              │  │
-        │  │                                                                         │  │
-        │  │     tools/list        tools/call          ◀── model-controlled          │  │
-        │  │     resources/list    resources/read      ◀── app-controlled            │  │
-        │  │     prompts/list      prompts/get         ◀── user-controlled           │  │
-        │  │                                                                         │  │
-        │  │  ──── client-offered (server ← client) ────                              │  │
-        │  │                                                                         │  │
-        │  │     sampling/createMessage                ◀── server asks for an LLM    │  │
-        │  │     elicitation/create                    ◀── server asks the user      │  │
-        │  │     roots/list                            ◀── server asks for scope     │  │
-        │  │                                                                         │  │
-        │  └─────────────────────────────────────────────────────────────────────────┘  │
-        │                                  │                                           │
-        └──────────────────────────────────┼───────────────────────────────────────────┘
+        │                                                                             │
+        │  ┌────────────────────────────── CLIENT ──────────────────────────────────┐ │
+        │  │                                                                        │ │
+        │  │  ──── server-exposed (server → client) ────                            │ │ 
+        │  │                                                                        │ │
+        │  │     tools/list        tools/call          ◀── model-controlled         │ │
+        │  │     resources/list    resources/read      ◀── app-controlled           │ │
+        │  │     prompts/list      prompts/get         ◀── user-controlled          │ │
+        │  │                                                                        │ │
+        │  │  ──── client-offered (server ← client) ────                            │ │
+        │  │                                                                        │ │
+        │  │     sampling/createMessage                ◀── server asks for an LLM   │ │
+        │  │     elicitation/create                    ◀── server asks the user     │ │
+        │  │     roots/list                            ◀── server asks for scope    │ │
+        │  │                                                                        │ │
+        │  └────────────────────────────────────────────────────────────────────────┘ │
+        │                                  │                                          │
+        └──────────────────────────────────┼──────────────────────────────────────────┘
                                            │  JSON-RPC 2.0 over stdio / HTTP+SSE
                                            ▼
                         ┌──────────────── MCP SERVER ───────────────┐
-                        │  Owns: tool handlers, resource readers,    │
-                        │  prompt templates, optional subscriptions  │
-                        └────────────────────────────────────────────┘
+                        │  Owns: tool handlers, resource readers,   │
+                        │  prompt templates, optional subscriptions │
+                        └───────────────────────────────────────────┘
 ```
 
 > **Rule**: A capability must be advertised in the `initialize` handshake
@@ -76,10 +76,10 @@ calling" in a vendor LLM API, but cross-process and language-agnostic.
 
 **Methods**
 
-| Method        | Direction       | Purpose                          |
-|---------------|-----------------|----------------------------------|
-| `tools/list`  | client → server | Enumerate available tools        |
-| `tools/call`  | client → server | Invoke a tool with arguments     |
+| Method        | Direction       | Purpose                                          |
+|---------------|-----------------|--------------------------------------------------|
+| `tools/list`  | client → server | Enumerate available tools                        |
+| `tools/call`  | client → server | Invoke a tool with arguments                     |
 | `notifications/tools/list_changed` | server → client | Server-pushed change signal |
 
 **Anatomy of a tool**
@@ -213,7 +213,7 @@ The `content` array supports four block types:
 
 This trips up everyone the first time, so it's worth being explicit:
 
-| Failure kind                  | Wire shape                                              | Who recovers   |
+| Failure kind                  | Wire shape                                               | Who recovers   |
 |-------------------------------|----------------------------------------------------------|----------------|
 | **Protocol Error**            | JSON-RPC `error` object (`code`, `message`)              | The client     |
 | **Tool Execution Error**      | A normal `result` with `isError: true` and text content  | The model      |
@@ -645,7 +645,7 @@ path, the host advertises roots and the server queries them.
 | Method                          | Direction       | Purpose                            |
 |---------------------------------|-----------------|------------------------------------|
 | `roots/list`                    | server → client | Enumerate accessible roots         |
-| `notifications/roots/list_changed`| client → server | "Roots changed; re-list"          |
+| `notifications/roots/list_changed`| client → server | "Roots changed; re-list"         |
 
 **Request and response**
 

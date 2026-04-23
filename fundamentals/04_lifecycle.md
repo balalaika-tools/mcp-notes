@@ -27,7 +27,7 @@ and you cannot run operational requests before the handshake completes.
 
 | Phase          | Who initiates | What's allowed                                      |
 |----------------|---------------|-----------------------------------------------------|
-| Initialize     | Client        | Only `initialize` request and `initialized` notif    |
+| Initialize     | Client        | Only `initialize` request and `initialized` notif   |
 | Operation      | Either side   | Anything advertised in capability negotiation       |
 | Shutdown       | Either side   | Transport-level disconnect; no special RPC          |
 
@@ -251,7 +251,7 @@ Each capability is an **object**, not a boolean. Sub-flags refine behavior:
 
 | Sub-flag       | Where it appears                       | Meaning                                              |
 |----------------|----------------------------------------|------------------------------------------------------|
-| `listChanged`  | `tools`, `resources`, `prompts`, `roots` | Sender will emit `*/list_changed` notifications      |
+| `listChanged`  | `tools`, `resources`, `prompts`, `roots` | Sender will emit `*/list_changed` notifications    |
 | `subscribe`    | `resources`                            | Server supports `resources/subscribe` for live diffs |
 
 > **Rule**: If the server advertises `tools` but **not** `tools.listChanged: true`, the
@@ -297,15 +297,15 @@ What's allowed:
 
 ### 5.1. The notification catalog
 
-| Notification                              | Direction      | When it fires                                |
-|-------------------------------------------|----------------|----------------------------------------------|
-| `notifications/cancelled`                 | Either         | Cancelling a previously-sent request         |
-| `notifications/progress`                  | Either         | Progress update for a long-running request   |
-| `notifications/message`                   | Server→Client  | Log entry (debug/info/warning/error)         |
-| `notifications/tools/list_changed`        | Server→Client  | Tool catalog changed                         |
-| `notifications/resources/list_changed`    | Server→Client  | Resource catalog changed                     |
-| `notifications/prompts/list_changed`      | Server→Client  | Prompt catalog changed                       |
-| `notifications/resources/updated`         | Server→Client  | A subscribed resource's content changed      |
+| Notification                              | Direction      | When it fires                                      |
+|-------------------------------------------|----------------|----------------------------------------------------|
+| `notifications/cancelled`                 | Either         | Cancelling a previously-sent request               |
+| `notifications/progress`                  | Either         | Progress update for a long-running request         |
+| `notifications/message`                   | Server→Client  | Log entry (debug/info/warning/error)               |
+| `notifications/tools/list_changed`        | Server→Client  | Tool catalog changed                               |
+| `notifications/resources/list_changed`    | Server→Client  | Resource catalog changed                           |
+| `notifications/prompts/list_changed`      | Server→Client  | Prompt catalog changed                             |
+| `notifications/resources/updated`         | Server→Client  | A subscribed resource's content changed            |
 | `notifications/roots/list_changed`        | Client→Server  | Workspace roots changed (e.g., user opened folder) |
 
 ### 5.2. Ping (heartbeat)
@@ -401,12 +401,12 @@ The receiver then emits one or more progress notifications, **referencing the sa
 }
 ```
 
-| Field           | Type             | Notes                                          |
-|-----------------|------------------|------------------------------------------------|
-| `progressToken` | string \| number | Echo the value the sender chose                |
+| Field           | Type             | Notes                                              |
+|-----------------|------------------|----------------------------------------------------|
+| `progressToken` | string \| number | Echo the value the sender chose                    |
 | `progress`      | number           | Current units processed (monotonically increasing) |
-| `total`         | number           | Optional. If omitted, treat as indeterminate   |
-| `message`       | string           | Optional human-readable status                 |
+| `total`         | number           | Optional. If omitted, treat as indeterminate       |
+| `message`       | string           | Optional human-readable status                     |
 
 > **Rule**: A receiver MUST NOT emit progress notifications for a request that didn't
 > include a `progressToken`. Doing so is harmless but wasteful — the sender has no way to
@@ -509,10 +509,10 @@ then reissue.
 
 ### 9.4. Stateful vs stateless servers
 
-| Server style | Issues `Mcp-Session-Id`? | Behavior                                   |
-|--------------|--------------------------|--------------------------------------------|
+| Server style | Issues `Mcp-Session-Id`? | Behavior                                      |
+|--------------|--------------------------|-----------------------------------------------|
 | Stateful     | Yes                      | Per-session memory: subscriptions, auth, etc. |
-| Stateless    | No (omits header)        | Each request is independent; no session     |
+| Stateless    | No (omits header)        | Each request is independent; no session       |
 
 Stateless servers scale horizontally without sticky routing. Stateful servers either need
 sticky routing or a shared store (Redis, DB) keyed by session ID — see

@@ -423,14 +423,14 @@ separate, sampled audit pipeline if you need full request/response capture.
 A good MCP dashboard answers "is anything weird?" in one glance. Six panels do most of
 the work:
 
-| Panel                                          | What it tells you                                   |
-|------------------------------------------------|-----------------------------------------------------|
-| Top tools by p95 latency                       | Regressions show up here first                      |
-| Error rate by tool, stacked by error class     | Prompt injection or runaway agents stand out        |
-| Active sessions / open SSE streams             | Capacity pressure and stream leaks                  |
-| Auth failures per minute                       | Leading indicator of misconfigured clients          |
+| Panel                                          | What it tells you                                            |
+|------------------------------------------------|--------------------------------------------------------------|
+| Top tools by p95 latency                       | Regressions show up here first                               |
+| Error rate by tool, stacked by error class     | Prompt injection or runaway agents stand out                 |
+| Active sessions / open SSE streams             | Capacity pressure and stream leaks                           |
+| Auth failures per minute                       | Leading indicator of misconfigured clients                   |
 | Tool calls per session per minute              | Healthy loops cluster at 1–3; spikes to 100+ = infinite loop |
-| Upstream pool saturation                       | The most common root cause of "MCP is slow"         |
+| Upstream pool saturation                       | The most common root cause of "MCP is slow"                  |
 
 The "tool calls per session per minute" panel deserves elaboration. A well-behaved agent
 calls 1–3 tools per minute during a conversation. A panicking or jailbroken agent will
@@ -453,11 +453,11 @@ someone looking at it now.
 Telemetry isn't free. A naive setup will quintuple your observability bill the first
 month an agent goes viral.
 
-| Signal | Strategy                                                                             |
-|--------|--------------------------------------------------------------------------------------|
-| Traces | Trace 100% of errors and slow requests. Head-sample successful traces at ~10%.       |
+| Signal | Strategy                                                                                     | 
+|--------|----------------------------------------------------------------------------------------------|
+| Traces | Trace 100% of errors and slow requests. Head-sample successful traces at ~10%.               |
 | Logs   | Structured JSON to stdout in production. Let your log shipper handle ingestion and rotation. |
-| Metrics| Cheap. Keep all of them, but watch label cardinality (see Section 11).               |
+| Metrics| Cheap. Keep all of them, but watch label cardinality (see Section 11).                       |
 
 > **Rule**: head-based sampling is fine for "show me what a normal request looks like."
 > **Tail-based sampling** in the OTel collector is what you actually want — it buffers

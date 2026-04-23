@@ -65,7 +65,10 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv \
+    && uv sync --frozen --no-dev
 
 COPY . .
 
@@ -138,9 +141,9 @@ production deps. Final images typically land at 100–150 MB instead of 400+ MB.
 Implement two endpoints. They answer different questions and feed different
 controllers.
 
-| Endpoint    | Question                          | Failure means              | Controller |
-|-------------|-----------------------------------|----------------------------|------------|
-| `/healthz`  | Is the process alive?             | Restart the container      | Liveness probe |
+| Endpoint    | Question                          | Failure means              | Controller      |
+|-------------|-----------------------------------|----------------------------|-----------------|
+| `/healthz`  | Is the process alive?             | Restart the container      | Liveness probe  |
 | `/ready`    | Are dependencies reachable?       | Stop sending traffic       | Readiness probe |
 
 ```python
@@ -189,9 +192,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: weather-mcp }
 spec:
+  selector:
+    matchLabels: { app: weather-mcp }
   replicas: 3
   strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
   template:
+    metadata:
+      labels: { app: weather-mcp }
     spec:
       terminationGracePeriodSeconds: 600   # let SSE streams drain
       containers:
@@ -264,7 +271,8 @@ See [03_scaling.md](03_scaling.md) for the full session-routing discussion.
 
 | Platform | Best for | Caveats |
 |----------|----------|---------|
-| **Cloud Run / App Runner** | Stateless HTTP servers; per-request billing | No long-lived SSE — cap at the platform's request timeout |
+| **Cloud Run** | Stateless HTTP servers; per-request billing | No long-lived SSE beyond the configured request timeout |
+| **App Runner** | Existing AWS shops already on it | No long-lived SSE; AWS stopped opening App Runner to new customers on 2026-03-31 |
 | **Cloudflare Workers** | Stateless, low-latency, global; using the `agents` framework | 30s CPU limit; no native FastMCP — TS only |
 | **Cloudflare Containers** | Stateful + persistent SSE; Durable Objects for session affinity | Newer platform; pricing model differs |
 | **Fly.io** | Stateful; per-region VMs; sticky-by-machine-id | Some operational hand-rolling |
@@ -382,22 +390,27 @@ Introduced in 2025 and now the canonical discovery mechanism.
 
 A minimal registry manifest:
 
-```yaml
-# server.yaml
-name: example/weather
-version: 1.4.2
-description: NOAA weather data and forecasts
-transports:
-  - type: stdio
-    install: { type: pypi, package: mcp-weather }
-    command: { run: uvx, args: [mcp-weather] }
-  - type: http
-    url: https://weather-mcp.example.com
-config:
-  - name: WEATHER_API_KEY
-    required: true
-    secret: true
-    description: NOAA API token
+```json
+{
+  "name": "example/weather",
+  "version_detail": {
+    "version": "1.4.2"
+  },
+  "description": "NOAA weather data and forecasts",
+  "packages": [
+    {
+      "registry_name": "pypi",
+      "name": "mcp-weather",
+      "version": "1.4.2",
+      "package_arguments": [
+        {
+          "type": "positional",
+          "value": "mcp-weather"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 For the broader landscape — gateways, proxies, registries, host capabilities — see
@@ -515,7 +528,7 @@ Things that will absolutely happen if you skip them.
 │                          3. close SSE streams cleanly           │
 │                          4. exit 0                              │
 │                                                                 │
-│  If you don't ──► SIGKILL at the grace deadline ──► dropped    │
+│  If you don't ──► SIGKILL at the grace deadline ──► dropped     │
 │                   requests, truncated streams, angry users      │
 └─────────────────────────────────────────────────────────────────┘
 ```

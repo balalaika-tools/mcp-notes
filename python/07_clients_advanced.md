@@ -229,10 +229,10 @@ What `mount` does:
 client ──►│  tool: github_create_issue   tool: jira_create_ticket   ...  │
           │         │                              │                     │
           │         ▼                              ▼                     │
-          │   ┌──────────┐                   ┌──────────┐                 │
-          │   │ gh_mcp   │                   │ jira_mcp │                 │
-          │   │ lifespan │                   │ lifespan │                 │
-          │   └──────────┘                   └──────────┘                 │
+          │   ┌──────────┐                   ┌──────────┐                │
+          │   │ gh_mcp   │                   │ jira_mcp │                │
+          │   │ lifespan │                   │ lifespan │                │
+          │   └──────────┘                   └──────────┘                │
           └──────────────────────────────────────────────────────────────┘
 ```
 

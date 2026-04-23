@@ -45,16 +45,17 @@ speaks OAuth 2.1. The MCP server only needs three things from it:
 
 ---
 
-## 2. What the Spec Mandates (`2025-11-25`)
+## 2. What the Spec Requires When You Support HTTP Auth (`2025-11-25`)
 
-The current MCP authorization spec is opinionated. These are not suggestions:
+Authorization is optional in MCP overall. But if your HTTP-based server supports MCP
+authorization, these requirements are not suggestions:
 
 | Requirement | What it means |
 |-------------|---------------|
 | **OAuth 2.1** | No implicit flow. No resource owner password credentials grant. Both were retired for security reasons. |
 | **PKCE for all clients** | Even confidential clients. Clients **must verify** the AS supports PKCE (via `code_challenge_methods_supported` in metadata) before initiating the flow. |
-| **RFC 9728 PRM** | MCP server publishes Protected Resource Metadata at `/.well-known/oauth-protected-resource`. |
-| **WWW-Authenticate on 401** | Must include `Bearer realm="..."` and `resource_metadata="<URL>"` so clients can bootstrap discovery from a single 401. |
+| **RFC 9728 PRM** | MCP server publishes Protected Resource Metadata and includes at least one `authorization_servers` entry. |
+| **WWW-Authenticate on 401** | If the server uses `401 Unauthorized` to trigger discovery, it must include `resource_metadata="<URL>"` so clients can bootstrap from a single challenge. |
 | **Audience-restricted tokens** | `aud` claim must name the MCP server. Tokens without an `aud` (or with the wrong one) must be rejected. |
 
 Recommended but not strictly required:
@@ -78,14 +79,14 @@ request. Assume the client has no prior knowledge of the AS.
 
 ```
 Client          MCP Server          Auth Server
-  │   POST /mcp/    │                    │
-  │ ───────────────>│                    │
-  │ 401 + WWW-Auth  │                    │
-  │ <───────────────│                    │
+  │   POST /mcp/    │                     │
+  │ ───────────────>│                     │
+  │ 401 + WWW-Auth  │                     │
+  │ <───────────────│                     │
   │  GET /.well-known/oauth-protected-resource
-  │ ───────────────>│                    │
-  │ { auth_servers: [...] }              │
-  │ <───────────────│                    │
+  │ ───────────────>│                     │
+  │ { auth_servers: [...] }               │
+  │ <───────────────│                     │
   │  GET /.well-known/oauth-authorization-server
   │ ──────────────────────────────────────>│
   │ { authorization_endpoint, token_endpoint, ... }
@@ -96,12 +97,12 @@ Client          MCP Server          Auth Server
   │ <──────────────────────────────────────│
   │  POST /token (code + verifier)
   │ ──────────────────────────────────────>│
-  │  Access token (JWT)                   │
+  │  Access token (JWT)                    │
   │ <──────────────────────────────────────│
-  │  POST /mcp/  Authorization: Bearer ...│
-  │ ───────────────>│                    │
-  │  200 OK         │                    │
-  │ <───────────────│                    │
+  │  POST /mcp/  Authorization: Bearer  ...│
+  │ ───────────────>│                      │
+  │  200 OK         │                      │
+  │ <───────────────│                      │
 ```
 
 Notice what's **not** in this diagram: the MCP server never talks to the Auth Server during
