@@ -26,9 +26,11 @@ matrix is the one I keep coming back to:
 > are host-initiated (the application decides what to attach). **Prompts** are
 > user-initiated (the human picks them from a menu or slash command).
 
-If you find yourself writing a tool called `get_readme` whose only job is to return a
-file — that should be a resource. If you have a tool that returns a giant block of
-boilerplate instructions to the model — that should be a prompt.
+If you find yourself writing a tool called `get_readme` whose only job is to expose a
+known document for host-side context attachment, make it a resource. But if the model
+needs to decide dynamically whether to fetch that README during task execution, make it
+a tool — or a general document-reading tool. If you have a tool that returns a giant
+block of boilerplate instructions to the model — that should be a prompt.
 
 ---
 

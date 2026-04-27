@@ -319,29 +319,92 @@ FastMCP 3.x lets you publish multiple versions of the same tool side-by-side. Th
 the migration story you wanted in 2.x: change a default, add a required field, restrict
 a return shape — without breaking clients pinned to the old behavior.
 
+Because the decorator's `description=` **overrides** the function docstring as the
+model-facing description, keep public-facing copy in `description=` and use the
+docstring for internal migration notes that the model never sees:
+
 ```python
-@mcp.tool(version="2.0")
-async def search(query: str, limit: int = 10) -> list[dict]:
-    """Search the index.
+from typing import Annotated
+from pydantic import Field
 
-    v2: limit defaults to 10 (was 50) for cheaper default calls.
+async def _search_impl(query: str, limit: int) -> list[dict]:
+    # Shared implementation — both versions call this.
+    ...
+
+@mcp.tool(
+    name="search",
+    version="2.0",
+    description=(
+        "Search the index. Use this version for normal search requests. "
+        "Supports a lower default result limit for faster, cheaper calls."
+    ),
+)
+async def search_v2(
+    query: Annotated[str, Field(description="The search query to run against the index.")],
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum number of results to return."),
+    ] = 10,
+) -> list[dict]:
+    """Internal migration notes.
+
+    v2 is the preferred implementation.
+    Changed default limit from 50 → 10 to reduce default cost and latency.
     """
-    return await _search_impl(query, limit)
+    return await _search_impl(query=query, limit=limit)
 
-@mcp.tool(version="1.0", name="search")
-async def search_v1(query: str, limit: int = 50) -> list[dict]:
-    """Search the index.
+@mcp.tool(
+    name="search",
+    version="1.0",
+    description=(
+        "Search the index using legacy result-limit behavior. "
+        "Use only when a client explicitly requires version 1.0."
+    ),
+)
+async def search_v1(
+    query: Annotated[str, Field(description="The search query to run against the index.")],
+    limit: Annotated[
+        int,
+        Field(ge=1, le=100, description="Maximum number of results to return."),
+    ] = 50,
+) -> list[dict]:
+    """Internal migration notes.
 
-    v1: kept for older clients during migration. Will be removed in 2026 Q3.
+    v1 kept for backward compatibility.
+    Removal target: 2026 Q3, after telemetry shows no remaining v1 traffic.
+    Difference from v2: default limit is 50 instead of 10.
     """
-    return await _search_impl(query, limit)
+    return await _search_impl(query=query, limit=limit)
+```
+
+What each piece does:
+
+| Element                | Purpose                                                        |
+|------------------------|----------------------------------------------------------------|
+| `description=`         | Model/client-facing copy — set this and the docstring is ignored |
+| Docstring              | Internal migration notes — developer-only, never exposed       |
+| `name="search"`        | Stable public tool name, survives function renames             |
+| `version="1.0"/"2.0"` | Explicit version pinning for client negotiation                |
+| Function name          | Implementation detail — not exposed when `name=` is set        |
+| `Annotated + Field`    | Per-parameter descriptions and validation                      |
+| `_search_impl`         | Shared logic — avoids duplicating business code               |
+
+Keep the model-facing `description` focused on tool selection, not operational metadata:
+
+```python
+# ✅ Guides the model toward correct version selection
+description="Use only when a client explicitly requires version 1.0."
+
+# ❌ Migration bookkeeping in the wrong place
+description="v1 kept for old clients. Will be removed in 2026 Q3."
 ```
 
 Clients see both versions in the tool list and can pin to the version they tested
 against. Once your telemetry shows v1 traffic at zero, delete it.
 
 > **Pattern**: deprecate, don't delete. Keep v1 around for at least one release cycle
-> after v2 ships, with a docstring that names the removal date.
+> after v2 ships, with the removal date in the docstring — not the model-facing
+> description.
 
 ---
 
