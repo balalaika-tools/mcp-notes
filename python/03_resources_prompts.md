@@ -36,8 +36,9 @@ block of boilerplate instructions to the model — that should be a prompt.
 
 ## 2. Resources — Basics
 
-A resource is identified by a **URI** and returns content when read. The decorator
-turns a function into both a `resources/list` entry and a `resources/read` handler.
+A resource is identified by a **URI** and returns content when read. For a static URI,
+the decorator creates a `resources/list` entry and a `resources/read` handler; for a
+templated URI, it creates a `resources/templates/list` entry and the read handler.
 
 ```python
 from fastmcp import FastMCP
@@ -54,27 +55,30 @@ The URI scheme is yours to design — `docs://`, `github://`, `db://table/users`
 something self-describing and stable. The host may cache by URI, so changing the
 scheme later means breaking every client that pinned to the old form.
 
-Return value can be:
+Return values can be:
 
 - `str` — treated as text content
 - `bytes` — treated as a binary blob (FastMCP base64-encodes it)
-- `list[ContentPart]` — for multi-part responses (text + image, etc.)
+- JSON-native values (`dict`, `list`, Pydantic models, primitives) — serialized to JSON text
+- `ResourceResult` — for multiple content items, per-item MIME types, and response metadata
 
-> **Note**: `dict` and `list` are **not** valid resource return types (unlike tools).
-> For structured data, serialize explicitly: `return json.dumps(data)` with
-> `mime_type="application/json"` on the decorator.
+> **Rule**: set `mime_type` explicitly for anything other than plain text. FastMCP can
+> serialize JSON-native values for you, but explicit `json.dumps(data)` plus
+> `mime_type="application/json"` is still the least surprising pattern when the exact
+> wire MIME type matters.
 
-MIME type is inferred from the URI suffix (`.md` → `text/markdown`) or specified
-explicitly with `mime_type="..."` on the decorator. When in doubt, set it explicitly —
-hosts use it to decide rendering, syntax highlighting, and whether to inline or link.
+MIME type is specified with `mime_type="..."` on the decorator. Some concrete resource
+classes, such as `FileResource`, can infer from files, but plain `@mcp.resource`
+handlers should be explicit — hosts use MIME types to decide rendering, syntax
+highlighting, and whether to inline or link.
 
-| URI suffix | Inferred MIME           |
-|------------|-------------------------|
-| `.md`      | `text/markdown`         |
-| `.json`    | `application/json`      |
-| `.txt`     | `text/plain`            |
-| `.png`     | `image/png`             |
-| (none)     | `application/octet-stream` for bytes, `text/plain` for str |
+| Content      | Good MIME type                         |
+|--------------|----------------------------------------|
+| Markdown     | `text/markdown`                        |
+| JSON         | `application/json`                     |
+| Plain text   | `text/plain`                           |
+| PNG/JPEG     | `image/png`, `image/jpeg`              |
+| Generic blob | `application/octet-stream`             |
 
 ---
 
@@ -118,20 +122,37 @@ parses the path components into the function's typed arguments.
 
 ## 4. Binary Content
 
-Returning `bytes` is the simple path; for richer responses use `BlobResourceContents`
-or return a list of content parts.
+Returning `bytes` is the simple path. FastMCP turns the bytes into MCP
+`BlobResourceContents` and base64-encodes them for the protocol response.
 
 ```python
-from fastmcp.types import BlobResourceContents
-
 @mcp.resource("photos://{photo_id}", mime_type="image/jpeg")
 async def photo(photo_id: str) -> bytes:
     return await _fetch_photo_bytes(photo_id)
 ```
 
-FastMCP handles base64 encoding for binary returns automatically — you do not assemble
-the wire format yourself. The MIME type on the decorator flows through to the response
-so the host knows it's looking at a JPEG and not random bytes.
+For multiple pieces or per-item MIME metadata, return `ResourceResult` with
+`ResourceContent` items. Do **not** hand-assemble `BlobResourceContents` unless you are
+working at the lower-level MCP SDK layer.
+
+```python
+from fastmcp.resources import ResourceContent, ResourceResult
+
+@mcp.resource("reports://{report_id}")
+async def report_bundle(report_id: str) -> ResourceResult:
+    markdown, chart_png = await _build_report(report_id)
+    return ResourceResult(
+        contents=[
+            ResourceContent(markdown, mime_type="text/markdown"),
+            ResourceContent(chart_png, mime_type="image/png"),
+        ],
+        meta={"report_id": report_id},
+    )
+```
+
+FastMCP handles base64 encoding for binary returns automatically. The MIME type on the
+decorator or `ResourceContent` flows through to the response so the host knows whether
+it is looking at a JPEG, Markdown, JSON, or random bytes.
 
 ⚠️ Don't return multi-megabyte blobs without thinking. The host has to ship the
 content into the model's context, and base64 inflates payloads by ~33%. For anything
@@ -141,22 +162,42 @@ large, return a reference (URL, ID) and let the model decide whether to fetch it
 
 ## 5. Listing Dynamically
 
-The default `resources/list` enumerates every `@mcp.resource(...)`-decorated function
-with a static URI. For dynamic catalogs — pages from a CMS, tables from a discovered
-schema — override the listing:
+The default `resources/list` enumerates concrete resources registered with
+`@mcp.resource(...)`, `mcp.add_resource(...)`, or a provider. FastMCP 3 does **not**
+document an `@mcp.list_resources` decorator; that pattern belongs to the low-level
+`mcp.server.Server` API.
+
+For dynamic catalogs — pages from a CMS, resources from an API, tenant-specific
+objects — add a provider that returns real `Resource` objects:
 
 ```python
-@mcp.list_resources
-async def my_resources() -> list[dict]:
-    """Override the default static list."""
-    return [
-        {
-            "uri": f"doc://page/{p.id}",
-            "name": p.title,
-            "mimeType": "text/markdown",
-        }
-        for p in await _fetch_all_pages()
-    ]
+from collections.abc import Sequence
+
+from fastmcp import FastMCP
+from fastmcp.resources import Resource
+from fastmcp.server.providers import Provider
+
+
+class CmsResourceProvider(Provider):
+    async def _list_resources(self) -> Sequence[Resource]:
+        pages = await _fetch_all_pages()
+        return [self._page_resource(p) for p in pages]
+
+    def _page_resource(self, page) -> Resource:
+        page_id = page.id
+
+        async def read_page() -> str:
+            return await _fetch_page_markdown(page_id)
+
+        return Resource.from_function(
+            read_page,
+            uri=f"docs://page/{page_id}",
+            name=page.title,
+            mime_type="text/markdown",
+        )
+
+
+mcp = FastMCP("cms", providers=[CmsResourceProvider()])
 ```
 
 This is most useful when:
@@ -165,35 +206,34 @@ This is most useful when:
 - You want to surface a curated subset and not every possible templated URI
 - Listing is expensive and you want to cache or paginate
 
-The reads themselves still go through your normal `@mcp.resource` handlers — the
-override only changes what shows up in the catalog.
+For large parameterized spaces, prefer a resource template instead of enumerating every
+possible resource. Providers are for when the catalog itself is a dynamic data source.
 
 ---
 
-## 6. Subscriptions — Live-Updating Resources
+## 6. Resource List Notifications
 
-For resources that change while the host is connected (live metrics, document edits,
-build status), MCP supports **subscriptions**. The client calls `resources/subscribe`
-on a URI; the server pushes `notifications/resources/updated` whenever the underlying
-data changes; the client re-reads.
+FastMCP automatically sends `notifications/resources/list_changed` when resources or
+templates are added, enabled, or disabled during an active MCP request context. That is
+about the catalog changing, not the content of a specific URI changing.
 
 ```python
-from fastmcp import Context
+@mcp.resource("data://example")
+def example_resource() -> str:
+    return "Hello!"
 
-@mcp.resource("metrics://current/{metric}")
-async def current_metric(metric: str, ctx: Context) -> dict:
-    return await _read_metric(metric)
-
-# When the underlying data changes, notify subscribers:
-async def on_metric_change(metric: str):
-    await mcp.notify_resource_updated(f"metrics://current/{metric}")
+# Inside a tool or other MCP request handler, these trigger list_changed notifications.
+mcp.disable(keys={"resource:data://example"})
+mcp.enable(keys={"resource:data://example"})
 ```
 
-You wire `on_metric_change` into wherever your application detects the change — a
-pub/sub callback, a file watcher, a polling loop. FastMCP tracks which sessions
-subscribed to which URIs and only pushes to relevant clients.
+The MCP protocol also defines `resources/subscribe` and
+`notifications/resources/updated` for content changes. Current FastMCP 3 docs do not
+show a high-level `mcp.notify_resource_updated(...)` helper, so do not document that
+as a FastMCP API unless your project provides its own wrapper or you are using the
+low-level SDK directly.
 
-The flow looks like:
+The protocol-level content-update flow looks like:
 
 ```
 client                              server
@@ -204,14 +244,14 @@ client                              server
   │           [time passes]           │
   │                                   │
   │                                   │  data changes externally
-  │                                   │  → notify_resource_updated(uri)
+  │                                   │  → server sends updated notification
   │<── notifications/resources/updated│
   │                                   │
   │── resources/read(uri) ───────────>│
   │<─────────── new content ──────────│
 ```
 
-Note the server doesn't push the *content* — only a notification that the URI changed.
+Note that the server doesn't push the *content* — only a notification that the URI changed.
 The client decides whether to re-read. This keeps the protocol cheap when an update
 happens but no one is actively looking.
 
@@ -230,21 +270,22 @@ actions, or a "Templates" menu — the **user** picks one and fills in the argum
 
 ```python
 from fastmcp import FastMCP
-from fastmcp.types import Message
+from fastmcp.prompts import Message
 
 mcp = FastMCP("review")
 
 @mcp.prompt
-def review_pr(diff: str, focus_areas: list[str] = []) -> list[Message]:
+def review_pr(diff: str, focus_areas: list[str] | None = None) -> list[Message]:
     """Generate a thorough code review."""
-    sys = "You are a senior engineer doing a thorough code review."
+    focus_areas = focus_areas or []
+    intro = "You are a senior engineer doing a thorough code review."
     user = (
         f"Review this diff:\n\n{diff}\n\n"
         f"Focus on: {', '.join(focus_areas) or 'general quality'}"
     )
     return [
-        Message(role="user", content=sys),
-        Message(role="user", content=user),
+        Message(intro),
+        Message(user),
     ]
 ```
 
@@ -259,35 +300,31 @@ usually inject into the active conversation.
 
 ---
 
-## 8. Prompt Arguments and Completion
+## 8. Prompt Arguments
 
 Argument schemas are derived directly from the function signature:
 
 - Each parameter becomes a prompt argument
-- Type hints map to JSON Schema types
+- Type hints document and validate the expected value
 - Default values mark the argument as optional
 - The docstring becomes the prompt's description
 
-For arguments with a fixed set of valid values (environments, services, languages),
-register a **completion provider** so the host can offer suggestions while the user
-types:
+MCP prompt arguments are strings on the wire. FastMCP lets you write typed Python
+parameters and handles useful conversions, including JSON strings for simple lists and
+dicts. Keep prompt inputs simple; deeply nested custom models make a lousy menu form.
 
 ```python
-@mcp.prompt
-def deploy(env: str, service: str) -> list[Message]: ...
+from typing import Literal
 
-@deploy.completion("env")
-def env_completions() -> list[str]:
-    return ["dev", "staging", "prod"]
+@mcp.prompt
+def deploy(env: Literal["dev", "staging", "prod"], service: str) -> str:
+    """Prepare a deployment checklist."""
+    return f"Prepare a deployment checklist for {service} in {env}."
 ```
 
-Clients call `completion/complete` with a partial value and the argument name; the
-server returns matching suggestions. This is what powers the dropdown when a user
-starts typing into a slash command.
-
-💡 Completion handlers can be async and can take the partial input as a parameter if
-you want to filter against a remote source (autocompleting a service name from a
-service registry, for example).
+No current FastMCP 3 decorator API for prompt argument completions is documented, so
+avoid examples like `@deploy.completion("env")` unless you have confirmed the exact
+version you are teaching supports it.
 
 ---
 
@@ -298,7 +335,7 @@ its response. The host attaches them to the model's context the same way it woul
 a regular resource read, but the trigger was the model calling a tool.
 
 ```python
-from fastmcp.types import EmbeddedResource
+from mcp.types import EmbeddedResource, TextResourceContents
 
 @mcp.tool
 async def fetch_docs(query: str) -> list[EmbeddedResource]:
@@ -307,11 +344,11 @@ async def fetch_docs(query: str) -> list[EmbeddedResource]:
     return [
         EmbeddedResource(
             type="resource",
-            resource={
-                "uri": m.uri,
-                "mimeType": "text/markdown",
-                "text": m.text,
-            },
+            resource=TextResourceContents(
+                uri=m.uri,
+                mimeType="text/markdown",
+                text=m.text,
+            ),
         )
         for m in matches
     ]
@@ -366,11 +403,11 @@ Templates feel like routing, but they're untrusted input. Validate against an
 allowlist, normalize paths, and never pass raw URI components into network or
 filesystem calls.
 
-**Subscribing on a stateless HTTP server**
+**Trying to push resource updates without a stateful delivery path**
 
-The subscribe call succeeds, but `notify_resource_updated` has no session to push to.
-The client waits forever for an update that will never arrive. Either run a stateful
-transport or document that your subscriptions are no-ops in stateless mode.
+The subscribe call may succeed at the protocol layer, but an update notification has
+no session to push to. The client waits forever for an update that will never arrive.
+Either run a stateful transport or document that subscriptions are not supported.
 
 **Prompts that include the entire conversation history**
 
@@ -378,7 +415,7 @@ transport or document that your subscriptions are no-ops in stateless mode.
 # ⚠️ Brittle and expensive
 @mcp.prompt
 def summarize_chat(history: list[dict]) -> list[Message]:
-    return [Message(role="user", content=f"Summarize: {history}")]
+    return [Message(f"Summarize: {history}")]
 ```
 
 Prompts are templates, not full conversations. Keep them focused — the host already
