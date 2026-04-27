@@ -60,6 +60,10 @@ Return value can be:
 - `bytes` — treated as a binary blob (FastMCP base64-encodes it)
 - `list[ContentPart]` — for multi-part responses (text + image, etc.)
 
+> **Note**: `dict` and `list` are **not** valid resource return types (unlike tools).
+> For structured data, serialize explicitly: `return json.dumps(data)` with
+> `mime_type="application/json"` on the decorator.
+
 MIME type is inferred from the URI suffix (`.md` → `text/markdown`) or specified
 explicitly with `mime_type="..."` on the decorator. When in doubt, set it explicitly —
 hosts use it to decide rendering, syntax highlighting, and whether to inline or link.
@@ -82,16 +86,17 @@ URI templates so a single handler covers a whole family of URIs.
 
 ```python
 import httpx
+import json
 
-@mcp.resource("github://repos/{owner}/{repo}/issues/{number}")
-async def github_issue(owner: str, repo: str, number: int) -> dict:
+@mcp.resource("github://repos/{owner}/{repo}/issues/{number}", mime_type="application/json")
+async def github_issue(owner: str, repo: str, number: int) -> str:
     """A specific GitHub issue."""
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues/{number}"
         )
         r.raise_for_status()
-        return r.json()
+        return json.dumps(r.json())
 ```
 
 Two list endpoints come into play:
