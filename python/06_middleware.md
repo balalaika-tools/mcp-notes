@@ -66,7 +66,12 @@ logger = logging.getLogger(__name__)
 class LoggingMiddleware(Middleware):
     async def __call__(self, ctx: MiddlewareContext, call_next: CallNext):
         method = ctx.method            # e.g. "tools/call", "resources/read"
-        request_id = ctx.request_id    # JSON-RPC id, propagates to logs
+        fastmcp_ctx = ctx.fastmcp_context
+        request_id = (
+            fastmcp_ctx.request_id
+            if fastmcp_ctx and fastmcp_ctx.request_context
+            else None
+        )
         start = time.perf_counter()
         try:
             result = await call_next(ctx)
@@ -94,9 +99,25 @@ class LoggingMiddleware(Middleware):
             raise  # re-raise so downstream layers and the client see the failure
 ```
 
-The `MiddlewareContext` object exposes everything you need: the JSON-RPC method name, the
-request ID, the session ID (if the transport has one), the raw request payload, headers
-(for HTTP transports), and a `state` dict for passing data down the chain.
+`MiddlewareContext` is deliberately small. In FastMCP 3.x it exposes `message`,
+`fastmcp_context`, `source`, `type`, `method`, `timestamp`, and `copy()`. It does **not**
+directly expose HTTP headers, request IDs, session IDs, or a mutable `state` dict.
+
+Use the right layer for each kind of data:
+
+| Need                      | Where to get it                                                                 |
+|---------------------------|----------------------------------------------------------------------------------|
+| MCP method                | `ctx.method`                                                                     |
+| Operation payload         | `ctx.message`                                                                    |
+| Request/session metadata  | `ctx.fastmcp_context.request_id` / `.session_id` when `request_context` exists   |
+| HTTP headers              | `get_http_headers()` from `fastmcp.server.dependencies`                          |
+| State for handlers        | async `await ctx.fastmcp_context.set_state(...)` / `await ctx.get_state(...)`     |
+
+Use `get_http_headers(include_all=True)` when you also need headers FastMCP excludes by
+default, such as `host` or `content-length`.
+
+For tool-specific middleware, `ctx.message` is the operation params object, so a tool
+name is `ctx.message.name`, not `ctx.request.params.name`.
 
 `call_next` is an async callable — `await` it exactly once to invoke the rest of the
 pipeline and get back the result.
@@ -156,7 +177,7 @@ SUCCESSORS = {
 
 class ToolFilterMiddleware(Middleware):
     async def on_call_tool(self, ctx: MiddlewareContext, call_next):
-        tool_name = ctx.request.params.name
+        tool_name = ctx.message.name
         if tool_name in DEPRECATED_TOOLS:
             # Loud failure — tells the agent exactly what to switch to
             raise ToolError(
@@ -165,11 +186,10 @@ class ToolFilterMiddleware(Middleware):
         return await call_next(ctx)
 
     async def on_list_tools(self, ctx: MiddlewareContext, call_next):
-        result = await call_next(ctx)
+        tools = await call_next(ctx)
         # Hide deprecated tools from discovery, but still allow direct calls
         # to fail loudly above (in case an old client cached the name).
-        result.tools = [t for t in result.tools if t.name not in DEPRECATED_TOOLS]
-        return result
+        return [t for t in tools if t.name not in DEPRECATED_TOOLS]
 ```
 
 The default `__call__` implementation in the base `Middleware` class dispatches to the
@@ -210,7 +230,12 @@ class RateLimitMiddleware(Middleware):
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
 
     async def __call__(self, ctx: MiddlewareContext, call_next):
-        client_id = ctx.session_id or "anonymous"
+        fastmcp_ctx = ctx.fastmcp_context
+        client_id = (
+            fastmcp_ctx.session_id
+            if fastmcp_ctx and fastmcp_ctx.request_context
+            else "anonymous"
+        )
         now = time.monotonic()
         bucket = self._buckets[client_id]
 
@@ -230,9 +255,10 @@ A few things to notice:
 - **`time.monotonic`**, not `time.time`. Wall-clock can jump backwards; monotonic can't.
 - **Sliding window via deque**, not a fixed bucket. A fixed bucket lets a client send
   `2 * per_minute` requests across a window boundary; a sliding window doesn't.
-- **`session_id or "anonymous"`** — for stateless transports without sessions, every
-  request bunches under one bucket. That's usually wrong; in practice you'd key off an
-  authenticated user ID extracted by an upstream auth middleware.
+- **`fastmcp_context.session_id` when available** — during initialization and other
+  phases without an MCP request context, this example falls back to `"anonymous"`.
+  That's usually too coarse for production; in practice you'd key off an authenticated
+  user ID extracted by an upstream auth middleware.
 
 ⚠️ This is **per-process**. If you run more than one replica of the server, each replica
 keeps its own counters and a client effectively gets `N * per_minute` requests across
@@ -249,23 +275,30 @@ downstream handlers can read it without re-parsing JWTs:
 
 ```python
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.exceptions import AuthorizationError
 
 from myapp.auth import verify_jwt, InvalidToken
 
 
 class AuthMiddleware(Middleware):
-    async def __call__(self, ctx: MiddlewareContext, call_next):
-        token = ctx.headers.get("authorization", "").removeprefix("Bearer ")
+    async def on_request(self, ctx: MiddlewareContext, call_next):
+        headers = get_http_headers()
+        token = headers.get("authorization", "").removeprefix("Bearer ")
         try:
             user = await verify_jwt(token)
         except InvalidToken:
-            # ToolError surfaces as a structured JSON-RPC error to the client
-            raise ToolError("authentication required")
+            # AuthorizationError surfaces as an auth failure to the client.
+            raise AuthorizationError("authentication required")
 
-        # Tools/resources can read this via ctx.middleware_state["user"]
+        # Tools/resources can read this via await ctx.get_state("user")
         # in their handler bodies. Don't put auth-sensitive material in logs.
-        ctx.state["user"] = user
+        if ctx.fastmcp_context:
+            await ctx.fastmcp_context.set_state(
+                "user",
+                user,
+                serializable=False,
+            )
         return await call_next(ctx)
 ```
 
@@ -274,11 +307,16 @@ In a tool handler, you'd then read it as:
 ```python
 @mcp.tool
 async def my_tool(arg: str, ctx: Context) -> str:
-    user = ctx.middleware_state["user"]
+    user = await ctx.get_state("user")
     if not user.has_scope("tools:write"):
         raise ToolError("insufficient scope")
     ...
 ```
+
+`Context` state methods are async in FastMCP 3.x. If you have synchronous helper
+functions that need the current user or tenant, bind that value to a `ContextVar` in
+middleware and reset it in a `finally` block instead of trying to read FastMCP state
+synchronously.
 
 Two notes on production-grade auth:
 
@@ -300,6 +338,7 @@ Counters and a latency histogram, scoped per tool name:
 from prometheus_client import Counter, Histogram
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.exceptions import ToolError
 
 CALLS = Counter(
     "mcp_tool_calls_total",
@@ -315,31 +354,31 @@ LATENCY = Histogram(
 
 class MetricsMiddleware(Middleware):
     async def on_call_tool(self, ctx: MiddlewareContext, call_next):
-        tool = ctx.request.params.name
+        tool = ctx.message.name
         with LATENCY.labels(tool=tool).time():
             try:
                 result = await call_next(ctx)
-                # MCP "soft" tool errors surface as result.isError == True;
-                # they're not exceptions but they're still failures from the
-                # perspective of the caller, so count them separately.
-                status = "error" if getattr(result, "isError", False) else "ok"
-                CALLS.labels(tool=tool, status=status).inc()
+                CALLS.labels(tool=tool, status="ok").inc()
                 return result
+            except ToolError:
+                # Expected tool-level failures: validation, authz, domain errors.
+                CALLS.labels(tool=tool, status="tool_error").inc()
+                raise
             except Exception:
                 # Hard exceptions: handler crashed, middleware raised, etc.
                 CALLS.labels(tool=tool, status="exception").inc()
                 raise
 ```
 
-The three statuses — `ok`, `error`, `exception` — let you distinguish:
+The three statuses — `ok`, `tool_error`, `exception` — let you distinguish:
 
 | Status      | Meaning                                                    |
 |-------------|------------------------------------------------------------|
 | `ok`        | Handler returned a successful result                       |
-| `error`     | Handler returned a result with `isError=True` (validation) |
+| `tool_error` | Handler raised `ToolError` (validation, authz, domain)    |
 | `exception` | Handler or middleware raised — bug, timeout, dependency    |
 
-A jump in `error` rate usually means a client started sending bad inputs; a jump in
+A jump in `tool_error` rate usually means a client started sending bad inputs; a jump in
 `exception` rate usually means **you** broke something. Alert on them differently.
 
 ---
@@ -359,9 +398,16 @@ tracer = trace.get_tracer("mcp.server")
 
 class TracingMiddleware(Middleware):
     async def __call__(self, ctx: MiddlewareContext, call_next):
-        with tracer.start_as_current_span(ctx.method) as span:
-            span.set_attribute("mcp.request_id", ctx.request_id)
-            span.set_attribute("mcp.session_id", ctx.session_id or "")
+        fastmcp_ctx = ctx.fastmcp_context
+        request_id = None
+        session_id = None
+        if fastmcp_ctx and fastmcp_ctx.request_context:
+            request_id = fastmcp_ctx.request_id
+            session_id = fastmcp_ctx.session_id
+
+        with tracer.start_as_current_span(ctx.method or "mcp.request") as span:
+            span.set_attribute("mcp.request_id", request_id or "")
+            span.set_attribute("mcp.session_id", session_id or "")
             try:
                 return await call_next(ctx)
             except Exception as exc:
@@ -450,13 +496,13 @@ except Exception:
 If you genuinely need to wrap, use `raise NewError(...) from exc` so the chain is
 preserved.
 
-**❌ Mutating `ctx.request` after `call_next` returns**
+**❌ Mutating `ctx.message` after `call_next` returns**
 
 ```python
 # ❌ The dispatcher already read params; mutating them now does nothing
 async def __call__(self, ctx, call_next):
     result = await call_next(ctx)
-    ctx.request.params.name = "rewritten"  # too late
+    ctx.message.name = "rewritten"  # too late
     return result
 ```
 
