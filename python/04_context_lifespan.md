@@ -136,28 +136,79 @@ Notes that bite people:
 treat `ctx` as a normal parameter. The model will see it, hallucinate a value for
 it, and your tool will get a string where it expected a `Context`.
 
+> **Under the hood**: `ctx: Context` is sugar. At registration time FastMCP rewrites
+> it to `ctx: Context = CurrentContext()` and resolves it through a dependency-injection
+> system. You can inject narrower things — just the access token, a single token claim,
+> the raw HTTP request — the same way. See [§8](#8-other-ways-to-inject--the-current-family).
+
 ---
 
-## 4. What `Context` Gives You
+## 4. What `Context` Gives You — Full Reference
 
-The `Context` object is the entire surface area for a tool's interaction with the
-runtime. Memorize this table — it's the API you'll reach for over and over.
+`Context` is the entire surface area for a tool's interaction with the runtime. Its
+members fall into five jobs: **reach app state**, **identify the request**, **talk back
+to the client**, **reach other components**, and **persist session state**. You won't
+use all of these in one tool — but knowing the shape stops you from reinventing things
+FastMCP already hands you.
 
-| Attribute / Method                                  | Use                                                                    |
-|-----------------------------------------------------|------------------------------------------------------------------------|
-| `ctx.request_context.lifespan_context`              | App-scoped state (whatever your `lifespan` yielded)                    |
-| `ctx.request_id`                                    | Correlate logs with the JSON-RPC request id                            |
-| `ctx.client_id`                                     | Stable id for the connected client (when sessions are enabled)         |
-| `await ctx.debug(msg)` / `info` / `warning` / `error` | Send a `notifications/message` log entry to the client                 |
-| `await ctx.report_progress(progress, total, message)` | Send a `notifications/progress` to the client                          |
-| `await ctx.read_resource(uri)`                      | Read another resource exposed by *this* server                         |
-| `await ctx.sample(messages, ...)`                   | Server-initiated LLM call — see [05_sampling_elicitation.md](05_sampling_elicitation.md) |
-| `await ctx.elicit(message, schema)`                 | Ask the user to fill in missing structured input                       |
-| `await ctx.list_roots()`                            | Ask the client which filesystem / URI roots it has granted access to   |
+**Reach app-scoped state and the server**
+
+| Member                  | Returns                          | Notes                                                                                          |
+|-------------------------|----------------------------------|------------------------------------------------------------------------------------------------|
+| `ctx.lifespan_context`  | whatever your `lifespan` yielded | The shortcut for app state. Same value as `ctx.request_context.lifespan_context`, but also works inside background tasks where there is no request context. |
+| `ctx.fastmcp`           | the `FastMCP` server instance    | Reach server config and registered components. Held by weakref — don't stash it past the call. |
+
+So the `get_user` tool above is more idiomatically written `state: AppState = ctx.lifespan_context`.
+
+**Identify the request**
+
+| Member                | Returns                                          | Notes                                                                                                   |
+|-----------------------|--------------------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `ctx.request_id`      | `str`                                            | JSON-RPC request id; correlate logs with a single call. **Raises** if the MCP session isn't established yet. |
+| `ctx.session_id`      | `str`                                            | Stable id for the session, on **every** transport (HTTP uses the `mcp-session-id` header; stdio/SSE get a generated UUID). Use it as a key into Redis/session storage. |
+| `ctx.client_id`       | `str \| None`                                    | Id the client supplied at init, when it supplied one.                                                   |
+| `ctx.transport`       | `"stdio" \| "sse" \| "streamable-http" \| None`  | Which transport is serving this request.                                                                |
+| `ctx.request_context` | `RequestContext \| None`                         | The raw SDK request context. **`None` until the MCP session is established** (e.g. inside `on_initialize` middleware) — guard before reading `request_id`/`session_id`. |
+
+**Talk back to the client** (all `async`)
+
+| Method                                                | Use                                                                                              |
+|-------------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `await ctx.debug(msg)` / `info` / `warning` / `error` | Send a `notifications/message` log entry to the client (see [§5](#5-logging-from-tools)).         |
+| `await ctx.report_progress(progress, total, message)` | Send a `notifications/progress` (see [§6](#6-progress-reporting-for-long-running-tools)). Works in foreground and background tasks. |
+| `await ctx.sample(messages, ...)`                     | Server-initiated LLM call — see [05_sampling_elicitation.md](05_sampling_elicitation.md).         |
+| `await ctx.elicit(message, response_type)`            | Ask the user to fill in structured input. Pass an explicit `response_type` (a Pydantic model, dataclass, or primitive) — omitting it is deprecated. |
+| `await ctx.list_roots()`                              | Ask the client which filesystem / URI roots it has granted access to.                             |
+| `await ctx.send_notification(notif)`                  | Send an arbitrary server notification (e.g. `ToolListChangedNotification()`).                     |
+| `await ctx.close_sse_stream()`                        | Gracefully close the HTTP stream so the client reconnects — used to dodge load-balancer timeouts on very long tools (StreamableHTTP + `EventStore` only; no-op otherwise). |
+
+**Reach other components on this server** (all `async`)
+
+| Method                                          | Use                                                          |
+|-------------------------------------------------|--------------------------------------------------------------|
+| `await ctx.read_resource(uri)`                  | Read a resource exposed by *this* server.                    |
+| `await ctx.list_resources()` / `list_prompts()` | Enumerate this server's resources/prompts (auto-paginated).  |
+| `await ctx.get_prompt(name, arguments)`         | Render one of this server's prompts.                         |
+
+**Persist session state** — `set_state` / `get_state` / `delete_state`, covered in [§7](#7-session-state--set_state--get_state).
+
+**Background tasks** (only relevant if you use `task=True`): `ctx.is_background_task` (bool) and `ctx.task_id` tell a handler it's running in a Docket worker rather than a live request. `elicit`/`sample`/`report_progress` transparently switch to task-aware implementations there.
+
+### What `Context` does *not* carry
+
+Inside a tool, `ctx` is effectively your one-stop object — but "everything" has exactly
+two deliberate gaps, and both are "wrong layer" rather than "missing feature":
+
+| Not on `Context`                          | Where it lives instead                                                                 | Why                                                                                       |
+|-------------------------------------------|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| The MCP **method** + raw, undispatched **params** (`tools/call`, the unparsed payload) | `MiddlewareContext.method` / `.message` (see [06_middleware.md](06_middleware.md))      | By the time you're in a handler, the method is already routed and the params are already your function arguments. Only middleware needs the envelope. |
+| The raw **HTTP request / headers**         | `get_http_request()` / `get_http_headers()` from `fastmcp.server.dependencies`, or `CurrentRequest()` / `CurrentHeaders()` injected in the signature ([§8](#8-other-ways-to-inject--the-current-family)) | `Context` gives you `session_id` and `transport`, but the HTTP layer is below MCP. It's reached through the DI helpers, not a `ctx` attribute. |
 
 > **Key insight**: `Context` is a *bidirectional* handle. It's not just "the request
-> object" — it lets your server call back into the client. That capability is what
-> separates MCP from a plain RPC framework.
+> object" — it lets your server call back into the client (sample, elicit, log, progress).
+> That capability is what separates MCP from a plain RPC framework. The only things it
+> deliberately omits are the middleware **envelope** and the raw **HTTP layer** — both
+> because they belong to a different layer than "I'm running a request and need to act on it."
 
 ---
 
@@ -180,7 +231,7 @@ async def import_csv(path: str, ctx: Context) -> dict:
         await ctx.warning("no rows found — nothing to import")
         return {"imported": 0}
 
-    state: AppState = ctx.request_context.lifespan_context
+    state: AppState = ctx.lifespan_context
     async with state.db.acquire() as conn:
         await conn.executemany(
             "INSERT INTO records (key, value) VALUES ($1, $2)",
@@ -255,7 +306,99 @@ async def reindex(ctx: Context) -> dict:
 
 ---
 
-## 7. Lifespan for Non-Async Resources
+## 7. Session State — `set_state` / `get_state`
+
+Beyond reaching lifespan resources, `Context` carries a small key-value store. This is
+the supported way to pass data *between* a request's middleware and its handler, or
+across several tool calls in the same session. Two scopes, picked by the `serializable`
+flag:
+
+| Scope                          | Set with                          | Lifetime                                  | Value constraint                          |
+|--------------------------------|-----------------------------------|-------------------------------------------|-------------------------------------------|
+| **Session** (default)          | `set_state(k, v)`                 | Persists across every request in the session (1-day TTL) | Must be JSON-serializable     |
+| **Request** (`serializable=False`) | `set_state(k, v, serializable=False)` | Only the current request (one tool call)  | Anything — clients, connections, objects  |
+
+Keys are automatically namespaced by `session_id`, so one client never sees another's
+state. `get_state` returns `None` for a missing key.
+
+```python
+@mcp.tool
+async def remember(value: str, ctx: Context) -> str:
+    await ctx.set_state("last_value", value)          # survives to the next call
+    return "stored"
+
+@mcp.tool
+async def recall(ctx: Context) -> str:
+    return await ctx.get_state("last_value") or "nothing yet"
+```
+
+The canonical pattern is **middleware produces, handler consumes**. Auth middleware
+verifies a token once and stashes the parsed user object (non-serializable) so every
+handler reads it without re-parsing a JWT:
+
+```python
+# in middleware (see 06_middleware.md §6)
+await ctx.fastmcp_context.set_state("user", user, serializable=False)
+
+# in any handler
+user = await ctx.get_state("user")
+```
+
+⚠️ Request-scoped (`serializable=False`) state does **not** survive to the next request,
+and in distributed/serverless HTTP deployments it isn't shared across machines. For
+cross-request or cross-replica state, store something JSON-serializable (an id, not the
+live object) and rehydrate from it.
+
+💡 Storing a non-serializable value with the default `serializable=True` raises a
+`TypeError` whose message tells you to pass `serializable=False`. If you see that error,
+you wanted request scope.
+
+---
+
+## 8. Other Ways to Inject — the `Current*` Family
+
+`ctx: Context` is the workhorse, but it's one member of a dependency-injection system.
+When a handler only needs *one slice* of the request, you can inject that slice directly
+by giving a parameter a `Current*()` default. FastMCP resolves it per call and hides it
+from the tool's JSON Schema, exactly like `ctx`.
+
+| Dependency             | Injects                                        | Reach for it when                                              |
+|------------------------|------------------------------------------------|----------------------------------------------------------------|
+| `CurrentContext()`     | the `Context`                                  | identical to `ctx: Context` (the annotation rewrites to this)  |
+| `CurrentFastMCP()`     | the `FastMCP` server                           | you need server introspection but not the full context        |
+| `CurrentRequest()`     | the Starlette `Request`                        | HTTP transports only — raw request access                     |
+| `CurrentHeaders()`     | `dict[str, str]` of HTTP headers (incl. `authorization`) | reading headers without calling `get_http_headers()` |
+| `CurrentAccessToken()` | the verified `AccessToken`                     | auth is configured and you want the whole token; raises if unauthenticated |
+| `TokenClaim("sub")`    | a single claim, as `str`                       | you only need one field — user id, tenant, email              |
+| `Progress()`           | a progress handle that also works in background tasks | progress that must work under a Docket worker          |
+
+```python
+from fastmcp.server.dependencies import TokenClaim, CurrentHeaders
+
+@mcp.tool
+async def add_expense(
+    amount: float,
+    user_id: str = TokenClaim("sub"),     # extracted from the access token's claims
+    headers: dict = CurrentHeaders(),     # raw HTTP headers, authorization included
+) -> dict:
+    # user_id and headers are injected — the model only sees `amount`
+    return {"user": user_id, "amount": amount}
+```
+
+The same values are reachable **imperatively** (e.g. from a plain helper function that
+doesn't take `ctx`) via `fastmcp.server.dependencies`: `get_context()`, `get_server()`,
+`get_http_request()`, `get_http_headers()`, and `get_access_token()`. The last returns
+`None` instead of raising when there's no authenticated user — use it for "auth optional"
+code paths.
+
+> **Key insight**: prefer `ctx: Context` for general tools. Reach for
+> `TokenClaim` / `CurrentAccessToken` / `CurrentHeaders` when a handler needs exactly one
+> piece of the request — making that dependency explicit in the signature reads better
+> than fishing it out of `ctx` and is trivially unit-testable (just pass the value).
+
+---
+
+## 9. Lifespan for Non-Async Resources
 
 Plenty of useful things have purely sync setup — loading a JSON config file,
 deserializing a model with `joblib.load`, opening a sqlite file. Use the same
@@ -288,7 +431,7 @@ while you wait. For most servers this is overkill.
 
 ---
 
-## 8. Per-Request Scratch Space
+## 10. Per-Request Scratch Space
 
 People sometimes ask: "what's the FastMCP way to share state between helper
 functions called from one tool?" Answer: **local variables**. There's no
@@ -310,9 +453,14 @@ to either (a) pass `ctx` and the dataclass down explicitly, or (b) restructure s
 the state isn't ambient. Ambient request-scoped state is the kind of pattern that
 looks clean for two weeks and then turns into a debugging nightmare.
 
+The one legitimate exception is when the *producer* isn't the tool body but
+middleware running before it — there's no call stack to thread a value through. That's
+exactly what request-scoped `ctx.set_state(..., serializable=False)` is for
+([§7](#7-session-state--set_state--get_state)). Inside a single tool, prefer locals.
+
 ---
 
-## 9. Using FastAPI Alongside FastMCP
+## 11. Using FastAPI Alongside FastMCP
 
 A common production setup: you have an existing FastAPI app and you want to add an
 MCP endpoint to it. Mount FastMCP's HTTP transport into FastAPI and share one
@@ -360,7 +508,7 @@ sub-apps shifted in 2024–2025.
 
 ---
 
-## 10. Failure Modes
+## 12. Failure Modes
 
 Real things that go wrong in production:
 
@@ -397,10 +545,18 @@ task can race ahead and try to use a half-initialized `AppState`. Either
 `await` everything in startup serially, or guard the background task with an
 `asyncio.Event` you set after `yield`.
 
+⚠️ **Reading `ctx.request_id` / `ctx.session_id` before the session exists**. Both
+raise (or, for `session_id`, need a fallback) when `ctx.request_context is None` — which
+is the case during `on_initialize` middleware and other pre-session phases. Guard with
+`if ctx.request_context is not None:` before touching them. This is why the middleware
+examples in [06_middleware.md](06_middleware.md) check `fastmcp_ctx.request_context`
+before reading ids.
+
 ⚠️ **Capturing `Context` in a closure that outlives the request**. The context is
 tied to the JSON-RPC request; once the tool returns, the context is invalid. Don't
 stash it in module-level state, don't pass it into a `create_task` that survives
-the call.
+the call. (Background tasks are the supported exception — use `task=True`, which gives
+the worker its own task-aware `Context`, rather than smuggling the request's context out.)
 
 > **Key insight**: lifespan owns the *resources*; `Context` is the *handle* a
 > single request uses to reach them and to communicate back to the client. Get

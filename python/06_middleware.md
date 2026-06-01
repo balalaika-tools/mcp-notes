@@ -99,7 +99,34 @@ class LoggingMiddleware(Middleware):
             raise  # re-raise so downstream layers and the client see the failure
 ```
 
-`MiddlewareContext` is deliberately small. In FastMCP 3.x it exposes `message`,
+### Two contexts, don't confuse them
+
+There are **two** different context objects in play, and mixing them up is the most
+common source of "why is this `None`?" confusion:
+
+| Object                   | What it is                                                                 | Where it comes from        |
+|--------------------------|----------------------------------------------------------------------------|----------------------------|
+| `ctx: MiddlewareContext` | The JSON-RPC *envelope* for this hop — method, payload, timing.            | the middleware parameter   |
+| `ctx.fastmcp_context`    | The per-request **`Context`** object — the exact one from [doc 04](04_context_lifespan.md), with the full logging / progress / state / sampling / lifespan API. | `MiddlewareContext.fastmcp_context` |
+
+So inside middleware you reach app state, logging, and the state store through
+`ctx.fastmcp_context` — it's the same handle a tool gets as `ctx: Context`:
+
+```python
+async def __call__(self, ctx: MiddlewareContext, call_next):
+    fctx = ctx.fastmcp_context          # the per-request Context from doc 04
+    if fctx and fctx.request_context:   # may be None pre-session (e.g. on_initialize)
+        await fctx.info(f"handling {ctx.method} as session {fctx.session_id}")
+        db = fctx.lifespan_context.db   # reach lifespan resources, same as a tool
+    return await call_next(ctx)
+```
+
+⚠️ `ctx.fastmcp_context` can be `None`, and even when present its `request_context` can
+be `None` during the `initialize` handshake. Always guard
+`if fctx and fctx.request_context:` before reading `request_id` / `session_id` — this is
+why every example below has that check.
+
+`MiddlewareContext` itself is deliberately small. In FastMCP 3.x it exposes `message`,
 `fastmcp_context`, `source`, `type`, `method`, `timestamp`, and `copy()`. It does **not**
 directly expose HTTP headers, request IDs, session IDs, or a mutable `state` dict.
 
@@ -313,10 +340,14 @@ async def my_tool(arg: str, ctx: Context) -> str:
     ...
 ```
 
-`Context` state methods are async in FastMCP 3.x. If you have synchronous helper
-functions that need the current user or tenant, bind that value to a `ContextVar` in
-middleware and reset it in a `finally` block instead of trying to read FastMCP state
-synchronously.
+`Context` state methods are async in FastMCP 3.x. Passing `serializable=False` keeps the
+parsed user object (which a JWT decodes to, not JSON) in **request scope** — alive for
+this one call and never written to the serializable store. For the full session-vs-request
+state model, see [04_context_lifespan.md §7](04_context_lifespan.md#7-session-state--set_state--get_state).
+
+If you have synchronous helper functions that need the current user or tenant, bind that
+value to a `ContextVar` in middleware and reset it in a `finally` block instead of trying
+to read FastMCP state synchronously.
 
 Two notes on production-grade auth:
 
